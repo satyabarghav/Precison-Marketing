@@ -9,6 +9,7 @@ from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression
 
 
 def generate_synthetic_data(n: int = 1000, seed: int = 42) -> pd.DataFrame:
@@ -78,5 +79,33 @@ def pca_2d(model: Pipeline, df: pd.DataFrame, features: List[str]) -> pd.DataFra
     coords = pca.fit_transform(transformed)
     out = pd.DataFrame({"x": coords[:, 0], "y": coords[:, 1]})
     return out
+
+
+def train_propensity(
+    df: pd.DataFrame,
+    features: List[str],
+    labels: pd.Series,
+) -> Tuple[Pipeline, Dict]:
+    X = df[features].astype(float)
+    y = labels.astype(int)
+    pipeline = Pipeline(
+        steps=[
+            ("scaler", StandardScaler()),
+            ("clf", LogisticRegression(max_iter=1000, random_state=42)),
+        ]
+    )
+    pipeline.fit(X, y)
+    setattr(pipeline, "feature_names_", list(features))
+    clf: LogisticRegression = pipeline.named_steps["clf"]
+    coef = clf.coef_[0].tolist()
+    intercept = float(clf.intercept_[0])
+    return pipeline, {"coef": coef, "intercept": intercept}
+
+
+def predict_propensity(model: Pipeline, row: Dict[str, float], features: List[str]) -> Tuple[float, int]:
+    X = pd.DataFrame([row], columns=features).astype(float)
+    proba = float(model.predict_proba(X)[0, 1])
+    klass = int(model.predict(X)[0])
+    return proba, klass
 
 

@@ -61,7 +61,7 @@ with st.sidebar:
         BACKEND_URL = backend_url_input
 
 
-tab1, tab2, tab3 = st.tabs(["Ingest", "Train & Visualize", "Predict One"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["Ingest", "Train & Visualize", "Predict One", "Propensity", "Experiments"])
 
 
 with tab1:
@@ -144,5 +144,145 @@ with tab3:
             st.success(f"Predicted segment: {res['segment']}")
         except Exception as e:
             st.error(f"Prediction failed: {e}")
+
+
+def call_propensity_train(features: List[str], strategy: str, threshold: float | None) -> Dict:
+    payload = {"features": features, "label_strategy": strategy}
+    if strategy == "custom_threshold" and threshold is not None:
+        payload["custom_threshold"] = threshold
+    resp = requests.post(f"{BACKEND_URL}/train/propensity", json=payload, timeout=120)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def call_propensity_predict(customer: Dict[str, float]) -> Dict:
+    payload = {"customer": customer}
+    resp = requests.post(f"{BACKEND_URL}/predict/propensity", json=payload, timeout=30)
+    resp.raise_for_status()
+    return resp.json()
+
+
+with tab4:
+    st.subheader("Propensity Model")
+    c1, c2, c3 = st.columns([2, 2, 1])
+    with c1:
+        p_features = st.multiselect(
+            "Features",
+            ["recency", "frequency", "monetary", "avg_order"],
+            default=["recency", "frequency", "monetary", "avg_order"],
+        )
+    with c2:
+        strategy = st.selectbox("Label strategy", ["median_monetary", "median_frequency", "custom_threshold"], index=0)
+    with c3:
+        thr = st.number_input("Threshold (when custom)", min_value=0.0, value=500.0)
+
+    if st.button("Train propensity", type="primary"):
+        try:
+            res = call_propensity_train(p_features, strategy, thr if strategy == "custom_threshold" else None)
+            st.success("Propensity model trained")
+            st.json(res)
+        except Exception as e:
+            st.error(f"Training failed: {e}")
+
+    st.markdown("---")
+    st.caption("Quick predict")
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        pr = st.number_input("recency", min_value=0.0, value=10.0, key="pr")
+    with c2:
+        pf = st.number_input("frequency", min_value=1.0, value=5.0, key="pf")
+    with c3:
+        pm = st.number_input("monetary", min_value=0.0, value=250.0, key="pm")
+    with c4:
+        pa = st.number_input("avg_order", min_value=0.0, value=50.0, key="pa")
+    if st.button("Predict propensity"):
+        try:
+            res = call_propensity_predict({"recency": pr, "frequency": pf, "monetary": pm, "avg_order": pa})
+            st.success(f"Probability: {res['probability']:.3f} | Class: {res['klass']}")
+        except Exception as e:
+            st.error(f"Prediction failed: {e}")
+
+
+def api_create_campaign(name: str) -> Dict:
+    payload = {"name": name}
+    r = requests.post(f"{BACKEND_URL}/campaigns", json=payload, timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+
+def api_assign(campaign_id: int, customer_id: int, variants: List[str]) -> Dict:
+    payload = {"campaign_id": campaign_id, "customer_id": customer_id, "variants": variants}
+    r = requests.post(f"{BACKEND_URL}/assign", json=payload, timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+
+def api_outcome(campaign_id: int, customer_id: int, converted: bool, revenue: float) -> Dict:
+    payload = {"campaign_id": campaign_id, "customer_id": customer_id, "converted": converted, "revenue": revenue}
+    r = requests.post(f"{BACKEND_URL}/outcomes", json=payload, timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+
+def api_report(campaign_id: int) -> Dict:
+    r = requests.get(f"{BACKEND_URL}/campaigns/{campaign_id}/report", timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+
+with tab5:
+    st.subheader("Experiments (A/B)")
+    name = st.text_input("Campaign name", value="Welcome Email Test")
+    if st.button("Create campaign"):
+        try:
+            st.session_state["campaign"] = api_create_campaign(name)
+            st.success(f"Campaign created: ID {st.session_state['campaign']['id']}")
+        except Exception as e:
+            st.error(f"Create failed: {e}")
+
+    if "campaign" in st.session_state:
+        c = st.session_state["campaign"]
+        st.markdown(f"**Active Campaign ID**: {c['id']} - {c['name']}")
+        c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
+        with c1:
+            cid = st.number_input("customer_id", min_value=1, value=1)
+        with c2:
+            variants = st.text_input("variants (comma)", value="A,B").split(",")
+        with c3:
+            if st.button("Assign variant"):
+                try:
+                    res = api_assign(int(c["id"]), int(cid), [v.strip() for v in variants if v.strip()])
+                    st.success(f"Assigned: {res['variant']}")
+                except Exception as e:
+                    st.error(f"Assign failed: {e}")
+        with c4:
+            st.write("")
+
+        st.markdown("---")
+        st.caption("Record outcome")
+        c1, c2, c3 = st.columns([1, 1, 1])
+        with c1:
+            conv = st.checkbox("converted", value=True)
+        with c2:
+            rev = st.number_input("revenue", min_value=0.0, value=100.0)
+        with c3:
+            if st.button("Submit outcome"):
+                try:
+                    api_outcome(int(c["id"]), int(cid), bool(conv), float(rev))
+                    st.success("Outcome recorded")
+                except Exception as e:
+                    st.error(f"Outcome failed: {e}")
+
+        if st.button("View report"):
+            try:
+                rep = api_report(int(c["id"]))
+                st.json(rep)
+                if rep.get("variants"):
+                    import altair as alt
+                    rep_df = pd.DataFrame(rep["variants"])  # variant, assigned, conversions, conversion_rate, avg_revenue
+                    chart = alt.Chart(rep_df).mark_bar().encode(x="variant", y="conversion_rate").properties(title="Conversion Rate by Variant")
+                    st.altair_chart(chart, use_container_width=True)
+            except Exception as e:
+                st.error(f"Report failed: {e}")
 
 
